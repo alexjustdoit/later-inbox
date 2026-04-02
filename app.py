@@ -37,17 +37,16 @@ def init_session():
 
 
 def restore_session():
-    """Restore session from URL hash (magic link) or query params."""
+    """Restore session from PKCE code in query params (magic link)."""
     params = st.query_params
-    access_token = params.get("access_token")
-    refresh_token = params.get("refresh_token")
-    if access_token and not st.session_state.access_token:
+    code = params.get("code")
+    if code and not st.session_state.access_token:
         try:
-            session = sb.auth.set_session(access_token, refresh_token or "")
-            st.session_state.access_token = session.session.access_token
-            st.session_state.refresh_token = session.session.refresh_token
-            st.session_state.user_id = session.user.id
-            st.session_state.user_email = session.user.email
+            response = sb.auth.exchange_code_for_session({"auth_code": code})
+            st.session_state.access_token = response.session.access_token
+            st.session_state.refresh_token = response.session.refresh_token
+            st.session_state.user_id = response.user.id
+            st.session_state.user_email = response.user.email
             st.query_params.clear()
         except Exception:
             pass
