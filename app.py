@@ -31,7 +31,7 @@ ai = get_openai()
 # ── Auth helpers ──────────────────────────────────────────────────────────────
 
 def init_session():
-    for key in ["access_token", "refresh_token", "user_id", "user_email", "otp_email"]:
+    for key in ["access_token", "refresh_token", "user_id", "user_email", "otp_email", "add_articles_open", "session_expired"]:
         if key not in st.session_state:
             st.session_state[key] = None
 
@@ -44,10 +44,12 @@ def is_logged_in() -> bool:
     return bool(st.session_state.get("user_id"))
 
 
-def logout():
+def logout(expired: bool = False):
     sb.auth.sign_out()
     for key in ["access_token", "refresh_token", "user_id", "user_email"]:
         st.session_state[key] = None
+    if expired:
+        st.session_state.session_expired = True
     st.rerun()
 
 # ── UI helpers ────────────────────────────────────────────────────────────────
@@ -118,6 +120,10 @@ def page_login():
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
         st.subheader("Sign in")
+
+        if st.session_state.get("session_expired"):
+            st.warning("Your session expired. Please sign in again.")
+            st.session_state.session_expired = False
 
         if not st.session_state.get("otp_email"):
             # Step 1: enter email
@@ -192,7 +198,7 @@ def page_onboarding(user_id: str):
 
 # ── Page: Main app ────────────────────────────────────────────────────────────
 
-def render_article_card(article: dict, user_id: str, section: str, selected_ids: list):
+def render_article_card(article: dict, user_id: str, section: str):
     article_id = article["id"]
     score = article.get("score")
     title = article.get("title") or article.get("domain") or article["url"]
@@ -200,14 +206,12 @@ def render_article_card(article: dict, user_id: str, section: str, selected_ids:
     read_time = article.get("read_time_minutes")
     url = article["url"]
 
+    show_checkbox = section == "inbox"
     col_check, col_main, col_actions = st.columns([0.04, 0.76, 0.20])
 
     with col_check:
-        checked = st.checkbox("", key=f"sel_{article_id}", label_visibility="hidden")
-        if checked and article_id not in selected_ids:
-            selected_ids.append(article_id)
-        elif not checked and article_id in selected_ids:
-            selected_ids.remove(article_id)
+        if show_checkbox:
+            st.checkbox("", key=f"sel_{article_id}", label_visibility="hidden")
 
     with col_main:
         pip_html = render_pips(score)
@@ -279,90 +283,104 @@ def page_app(user_id: str, user_email: str):
     st.divider()
 
     # Add URLs section
-    with st.expander("➕ Add articles", expanded=False):
+    add_open = st.session_state.get("add_articles_open", False)
+    with st.expander("➕ Add articles", expanded=bool(add_open)):
         raw_input = st.text_area(
             "Paste URLs (one per line)",
             height=120,
             placeholder="https://example.com/article\nhttps://another.com/post",
             label_visibility="collapsed",
+            key="url_input",
         )
         if st.button("Fetch & Score", type="primary", use_container_width=False):
             urls = [u.strip() for u in raw_input.strip().splitlines() if u.strip().startswith("http")]
             if not urls:
                 st.warning("No valid URLs found. Make sure each URL starts with http.")
             else:
-                # Check for duplicates already in inbox
-                existing = db.get_articles(user_id, "inbox", sb)
-                existing_urls = {a["url"] for a in existing}
-                new_urls = [u for u in urls if u not in existing_urls]
-                dupes = len(urls) - len(new_urls)
+                try:
+                    existing = db.get_articles(user_id, "inbox", sb)
+                    existing_urls = {a["url"] for a in existing}
+                    new_urls = [u for u in urls if u not in existing_urls]
+                    dupes = len(urls) - len(new_urls)
 
-                if not new_urls:
-                    st.info("All pasted URLs are already in your inbox.")
-                else:
-                    with st.spinner(f"Fetching {len(new_urls)} article{'s' if len(new_urls) > 1 else ''}…"):
-                        fetched = fetch_urls_parallel(new_urls)
+                    if not new_urls:
+                        st.info("All pasted URLs are already in your inbox.")
+                    else:
+                        with st.spinner(f"Fetching {len(new_urls)} article{'s' if len(new_urls) > 1 else ''}…"):
+                            fetched = fetch_urls_parallel(new_urls)
 
-                    prefs = db.get_or_create_preferences(user_id, sb)
-                    with st.spinner("Scoring…"):
-                        scores = score_articles(
-                            articles=fetched,
-                            manual_preferences=prefs.get("manual_preferences", ""),
-                            learned_preferences=prefs.get("learned_preferences"),
-                            client=ai,
-                        )
+                        prefs = db.get_or_create_preferences(user_id, sb)
+                        with st.spinner("Scoring…"):
+                            scores = score_articles(
+                                articles=fetched,
+                                manual_preferences=prefs.get("manual_preferences", ""),
+                                learned_preferences=prefs.get("learned_preferences"),
+                                client=ai,
+                            )
 
-                    url_to_score = {s["url"]: s for s in scores}
-                    rows = []
-                    for f in fetched:
-                        s = url_to_score.get(f["url"], {})
-                        rows.append({
-                            "user_id": user_id,
-                            "url": f["url"],
-                            "title": f.get("title"),
-                            "domain": f.get("domain"),
-                            "description": f.get("description"),
-                            "content_snippet": f.get("content_snippet"),
-                            "has_full_content": f.get("has_full_content", False),
-                            "score": s.get("score"),
-                            "score_reason": s.get("score_reason"),
-                            "read_time_minutes": s.get("read_time_minutes"),
-                            "status": "inbox",
-                        })
-                    db.upsert_articles(rows, sb)
+                        url_to_score = {s["url"]: s for s in scores}
+                        rows = []
+                        for f in fetched:
+                            s = url_to_score.get(f["url"], {})
+                            rows.append({
+                                "user_id": user_id,
+                                "url": f["url"],
+                                "title": f.get("title") or f.get("domain") or f["url"],
+                                "domain": f.get("domain"),
+                                "description": f.get("description"),
+                                "content_snippet": f.get("content_snippet"),
+                                "has_full_content": f.get("has_full_content", False),
+                                "score": s.get("score"),
+                                "score_reason": s.get("score_reason"),
+                                "read_time_minutes": s.get("read_time_minutes"),
+                                "status": "inbox",
+                            })
+                        db.upsert_articles(rows, sb)
 
-                    msg = f"Added {len(new_urls)} article{'s' if len(new_urls) > 1 else ''}."
-                    if dupes:
-                        msg += f" ({dupes} duplicate{'s' if dupes > 1 else ''} skipped)"
-                    st.success(msg)
-                    st.rerun()
-
-    # Selected articles multi-rescore
-    selected_ids = st.session_state.get("selected_ids", [])
-    st.session_state.selected_ids = selected_ids
+                        msg = f"Added {len(new_urls)} article{'s' if len(new_urls) > 1 else ''}."
+                        if dupes:
+                            msg += f" ({dupes} duplicate{'s' if dupes > 1 else ''} skipped)"
+                        st.success(msg)
+                        st.session_state.add_articles_open = False
+                        st.rerun()
+                except Exception as e:
+                    if "JWT" in str(e) or "token" in str(e).lower() or "auth" in str(e).lower():
+                        logout(expired=True)
+                    else:
+                        st.error(f"Something went wrong: {e}")
 
     # Inbox
     inbox = db.get_articles(user_id, "inbox", sb)
     st.subheader(f"Inbox ({len(inbox)})")
 
     if not inbox:
-        st.caption("Your inbox is empty. Paste some URLs above to get started.")
+        st.markdown(
+            """
+            <div style="text-align:center;padding:3rem 0 2rem 0;color:#6b7280;">
+                <div style="font-size:4rem">📭</div>
+                <div style="font-size:1.2rem;font-weight:600;margin-top:0.75rem;color:#d1d5db">All clear</div>
+                <div style="margin-top:0.4rem">Nothing waiting to be read. Enjoy the moment — or add something new above.</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
     else:
-        if selected_ids:
-            selected_articles = [a for a in inbox if a["id"] in selected_ids]
+        for article in inbox:
+            render_article_card(article, user_id, "inbox")
+            st.divider()
+
+        # Multi-select re-score (computed from checkbox widget state after render)
+        selected_articles = [a for a in inbox if st.session_state.get(f"sel_{a['id']}", False)]
+        if selected_articles:
             if st.button(f"↻ Re-score selected ({len(selected_articles)})", type="secondary"):
                 rescore_articles(selected_articles, user_id)
-
-        for article in inbox:
-            render_article_card(article, user_id, "inbox", selected_ids)
-            st.divider()
 
     # Read section
     read_articles = db.get_articles(user_id, "read", sb)
     if read_articles:
         with st.expander(f"✓ Read ({len(read_articles)})"):
             for article in read_articles:
-                render_article_card(article, user_id, "read", [])
+                render_article_card(article, user_id, "read")
                 st.divider()
 
     # Archived section
@@ -370,7 +388,7 @@ def page_app(user_id: str, user_email: str):
     if archived:
         with st.expander(f"🗄 Archived ({len(archived)})"):
             for article in archived:
-                render_article_card(article, user_id, "archived", [])
+                render_article_card(article, user_id, "archived")
                 st.divider()
 
 # ── Main ──────────────────────────────────────────────────────────────────────
