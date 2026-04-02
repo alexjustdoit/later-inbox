@@ -31,25 +31,13 @@ ai = get_openai()
 # ── Auth helpers ──────────────────────────────────────────────────────────────
 
 def init_session():
-    for key in ["access_token", "refresh_token", "user_id", "user_email"]:
+    for key in ["access_token", "refresh_token", "user_id", "user_email", "otp_email"]:
         if key not in st.session_state:
             st.session_state[key] = None
 
 
 def restore_session():
-    """Restore session from PKCE code in query params (magic link)."""
-    params = st.query_params
-    code = params.get("code")
-    if code and not st.session_state.access_token:
-        try:
-            response = sb.auth.exchange_code_for_session({"auth_code": code})
-            st.session_state.access_token = response.session.access_token
-            st.session_state.refresh_token = response.session.refresh_token
-            st.session_state.user_id = response.user.id
-            st.session_state.user_email = response.user.email
-            st.query_params.clear()
-        except Exception:
-            pass
+    pass  # No redirect-based auth; session is set directly on OTP verify
 
 
 def is_logged_in() -> bool:
@@ -130,16 +118,50 @@ def page_login():
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
         st.subheader("Sign in")
-        email = st.text_input("Email address", placeholder="you@example.com")
-        if st.button("Send magic link", use_container_width=True, type="primary"):
-            if not email or "@" not in email:
-                st.error("Enter a valid email address.")
-            else:
-                try:
-                    sb.auth.sign_in_with_otp({"email": email})
-                    st.success(f"Check your inbox at **{email}** for a sign-in link.")
-                except Exception as e:
-                    st.error(f"Error: {e}")
+
+        if not st.session_state.get("otp_email"):
+            # Step 1: enter email
+            email = st.text_input("Email address", placeholder="you@example.com")
+            if st.button("Send code", use_container_width=True, type="primary"):
+                if not email or "@" not in email:
+                    st.error("Enter a valid email address.")
+                else:
+                    try:
+                        sb.auth.sign_in_with_otp({
+                            "email": email,
+                            "options": {"should_create_user": True},
+                        })
+                        st.session_state.otp_email = email
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Error: {e}")
+        else:
+            # Step 2: enter OTP code
+            email = st.session_state.otp_email
+            st.info(f"A 6-digit code was sent to **{email}**")
+            code = st.text_input("Enter code", max_chars=6, placeholder="123456")
+            col_a, col_b = st.columns(2)
+            if col_a.button("Verify", use_container_width=True, type="primary"):
+                if not code or len(code) != 6:
+                    st.error("Enter the 6-digit code from your email.")
+                else:
+                    try:
+                        response = sb.auth.verify_otp({
+                            "email": email,
+                            "token": code,
+                            "type": "email",
+                        })
+                        st.session_state.access_token = response.session.access_token
+                        st.session_state.refresh_token = response.session.refresh_token
+                        st.session_state.user_id = response.user.id
+                        st.session_state.user_email = response.user.email
+                        st.session_state.otp_email = None
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Invalid or expired code. Try again.")
+            if col_b.button("Use a different email", use_container_width=True):
+                st.session_state.otp_email = None
+                st.rerun()
 
 # ── Page: Onboarding ──────────────────────────────────────────────────────────
 
