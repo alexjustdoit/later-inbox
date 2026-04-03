@@ -418,6 +418,13 @@ def page_app(user_id: str, user_email: str):
 
 def main():
     init_session()
+
+    # Cookie controller needs one render cycle to load from the browser.
+    # If getAll() returns None the component hasn't communicated yet — stop
+    # and let Streamlit re-run automatically once it does.
+    if cookies.getAll() is None:
+        st.stop()
+
     restore_session()
 
     if not is_logged_in():
