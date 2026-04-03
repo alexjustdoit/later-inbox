@@ -3,7 +3,7 @@ import streamlit as st
 from supabase import create_client, Client
 from openai import OpenAI
 from dotenv import load_dotenv
-from streamlit_cookies_controller import CookieController
+import streamlit.components.v1 as components
 
 from utils.fetcher import fetch_urls_parallel
 from utils.scorer import score_articles, update_learned_preferences
@@ -28,7 +28,17 @@ def get_openai() -> OpenAI:
 
 sb = get_supabase()
 ai = get_openai()
-cookies = CookieController()
+
+_cookie_bridge = components.declare_component(
+    "cookie_bridge",
+    path=os.path.join(os.path.dirname(__file__), "components/cookie_bridge"),
+)
+
+def _set_cookies(access_token: str, refresh_token: str):
+    _cookie_bridge(action="set", access_token=access_token, refresh_token=refresh_token, max_age=2592000, key="set_cookies")
+
+def _clear_cookies():
+    _cookie_bridge(action="clear", access_token="", refresh_token="", key="clear_cookies")
 
 # ── Auth helpers ──────────────────────────────────────────────────────────────
 
@@ -54,8 +64,7 @@ def restore_session():
                 st.session_state.user_id = result.user.id
                 st.session_state.user_email = result.user.email
         except Exception:
-            cookies.remove("later_access_token")
-            cookies.remove("later_refresh_token")
+            _clear_cookies()
 
 
 def is_logged_in() -> bool:
@@ -66,8 +75,7 @@ def logout(expired: bool = False):
     sb.auth.sign_out()
     for key in ["access_token", "refresh_token", "user_id", "user_email"]:
         st.session_state[key] = None
-    cookies.remove("later_access_token")
-    cookies.remove("later_refresh_token")
+    _clear_cookies()
     if expired:
         st.session_state.session_expired = True
     st.rerun()
@@ -274,8 +282,7 @@ def page_app(user_id: str, user_email: str):
     # Write auth cookies here (not at login time) so the component isn't
     # interrupted by an immediate st.rerun() before it can write to the browser.
     if st.session_state.pop("_write_auth_cookies", False):
-        cookies.set("later_access_token", st.session_state.access_token, max_age=60 * 60 * 24 * 30)
-        cookies.set("later_refresh_token", st.session_state.refresh_token, max_age=60 * 60 * 24 * 30)
+        _set_cookies(st.session_state.access_token, st.session_state.refresh_token)
 
     # Header
     col_title, col_settings, col_logout = st.columns([0.8, 0.1, 0.1])

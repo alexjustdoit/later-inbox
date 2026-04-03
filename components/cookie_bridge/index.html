@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html>
+<head>
+<script>
+  function send(type, data) {
+    window.parent.postMessage(
+      Object.assign({ isStreamlitMessage: true, type: type }, data),
+      "*"
+    );
+  }
+
+  window.addEventListener("message", function (event) {
+    if (!event.data.isStreamlitMessage) return;
+    if (event.data.type !== "streamlit:render") return;
+
+    var args = event.data.args || {};
+
+    if (args.action === "set") {
+      var age = args.max_age || 2592000;
+      document.cookie = "later_access_token=" + args.access_token + "; max-age=" + age + "; path=/; SameSite=Lax";
+      document.cookie = "later_refresh_token=" + args.refresh_token + "; max-age=" + age + "; path=/; SameSite=Lax";
+    } else if (args.action === "clear") {
+      document.cookie = "later_access_token=; max-age=0; path=/";
+      document.cookie = "later_refresh_token=; max-age=0; path=/";
+    }
+
+    send("streamlit:setComponentValue", { value: true, dataType: "json" });
+    send("streamlit:setFrameHeight", { height: 0 });
+  });
+
+  send("streamlit:componentReady", { apiVersion: 1 });
+  send("streamlit:setFrameHeight", { height: 0 });
+</script>
+</head>
+<body></body>
+</html>
