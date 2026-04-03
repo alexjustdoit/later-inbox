@@ -8,6 +8,7 @@ import streamlit.components.v1 as components
 from utils.fetcher import fetch_urls_parallel
 from utils.scorer import score_articles, update_learned_preferences
 from utils import db
+from utils import notion as notion_utils
 
 load_dotenv()
 
@@ -110,10 +111,22 @@ def trigger_learning_if_due(user_id: str):
                 db.save_learned_preferences(user_id, learned, sb)
 
 
+def _auto_sync_if_needed(user_id: str):
+    prefs = db.get_or_create_preferences(user_id, sb)
+    if prefs.get("notion_auto_sync") and prefs.get("notion_token") and prefs.get("notion_database_id"):
+        try:
+            articles = db.get_all_articles(user_id, sb)
+            notion_utils.sync_articles_to_notion(articles, prefs["notion_token"], prefs["notion_database_id"])
+            db.update_notion_last_synced(user_id, sb)
+        except Exception:
+            pass  # Don't block the user if Notion is unavailable
+
+
 def handle_status_change(article_id: str, new_status: str, user_id: str):
     db.update_article_status(article_id, new_status, sb)
     db.increment_action_count(user_id, sb)
     trigger_learning_if_due(user_id)
+    _auto_sync_if_needed(user_id)
     st.rerun()
 
 
@@ -295,26 +308,173 @@ def page_app(user_id: str, user_email: str):
     if st.session_state.get("show_settings", False):
         with st.expander("Settings", expanded=True):
             prefs = db.get_or_create_preferences(user_id, sb)
-            st.markdown("**Your interests** *(used to score new articles)*")
-            new_manual = st.text_area(
-                "Topics and goals",
-                value=prefs.get("manual_preferences", ""),
-                height=100,
-                label_visibility="collapsed",
-            )
-            if st.button("Save"):
-                db.save_preferences(user_id, new_manual.strip(), sb)
-                st.success("Saved.")
+            tab_pref, tab_notion, tab_sync = st.tabs(["Preferences", "Notion", "Sync"])
 
-            learned = prefs.get("learned_preferences")
-            if learned:
-                st.markdown("**Learned from your reading history**")
-                st.info(learned)
-                if st.button("Clear learned preferences"):
-                    db.save_learned_preferences(user_id, "", sb)
-                    st.rerun()
-            else:
-                st.caption("Learned preferences will appear here after you read or archive a few articles.")
+            # ── Preferences tab ──────────────────────────────────────────────
+            with tab_pref:
+                st.markdown("**Your interests** *(used to score new articles)*")
+                new_manual = st.text_area(
+                    "Topics and goals",
+                    value=prefs.get("manual_preferences", ""),
+                    height=100,
+                    label_visibility="collapsed",
+                )
+                if st.button("Save", key="save_prefs"):
+                    db.save_preferences(user_id, new_manual.strip(), sb)
+                    st.success("Saved.")
+
+                learned = prefs.get("learned_preferences")
+                if learned:
+                    st.markdown("**Learned from your reading history**")
+                    st.info(learned)
+                    if st.button("Clear learned preferences"):
+                        db.save_learned_preferences(user_id, "", sb)
+                        st.rerun()
+                else:
+                    st.caption("Learned preferences will appear here after you read or archive a few articles.")
+
+            # ── Notion tab ───────────────────────────────────────────────────
+            with tab_notion:
+                notion_token = prefs.get("notion_token")
+
+                if notion_token:
+                    st.success("Notion connected")
+                    db_id = prefs.get("notion_database_id", "")
+                    ins_id = prefs.get("notion_insights_page_id", "")
+                    if db_id:
+                        st.caption(f"[Articles database](https://notion.so/{db_id.replace('-', '')})")
+                    if ins_id:
+                        st.caption(f"[Insights page](https://notion.so/{ins_id.replace('-', '')})")
+                    if st.button("Disconnect Notion", type="secondary"):
+                        db.clear_notion_config(user_id, sb)
+                        st.session_state.pop("notion_test_result", None)
+                        st.rerun()
+                else:
+                    st.markdown("Sync your reading list with Notion and get AI insights on a dedicated page.")
+                    with st.expander("Setup instructions"):
+                        st.markdown("""
+**Step 1.** Go to [notion.so/profile/integrations](https://www.notion.so/profile/integrations) and create a new **Internal** integration. Name it something like "Later".
+
+**Step 2.** Copy the **Internal Integration Secret** (starts with `secret_...`).
+
+**Step 3.** In Notion, open the page where you want Later to create its database and insights page. Click **···** → **Connect to** → select your integration.
+
+**Step 4.** Copy that page's URL and paste it below.
+                        """)
+
+                    token_input = st.text_input(
+                        "Integration secret", type="password",
+                        placeholder="secret_...", key="notion_token_input"
+                    )
+                    if st.button("Test connection", disabled=not bool(token_input)):
+                        success, msg = notion_utils.test_connection(token_input)
+                        st.session_state.notion_test_result = (success, msg, token_input)
+                        st.rerun()
+
+                    test_result = st.session_state.get("notion_test_result")
+                    if test_result:
+                        success, msg, tested_token = test_result
+                        if success:
+                            st.success(msg)
+                            page_url = st.text_input(
+                                "Parent page URL",
+                                placeholder="https://www.notion.so/your-page-...",
+                                key="notion_page_url_input",
+                            )
+                            if st.button("Connect & Set Up", type="primary", disabled=not bool(page_url)):
+                                with st.spinner("Creating Notion database and insights page…"):
+                                    try:
+                                        parent_id = notion_utils.extract_page_id(page_url)
+                                        database_id, insights_page_id = notion_utils.setup_notion(tested_token, parent_id)
+                                        db.save_notion_config(user_id, {
+                                            "notion_token": tested_token,
+                                            "notion_parent_page_id": parent_id,
+                                            "notion_database_id": database_id,
+                                            "notion_insights_page_id": insights_page_id,
+                                        }, sb)
+                                        st.session_state.pop("notion_test_result", None)
+                                        st.rerun()
+                                    except Exception as e:
+                                        st.error(f"Setup failed: {e}")
+                        else:
+                            st.error(msg)
+
+            # ── Sync tab ─────────────────────────────────────────────────────
+            with tab_sync:
+                notion_connected = bool(prefs.get("notion_token") and prefs.get("notion_database_id"))
+
+                if not notion_connected:
+                    st.info("Connect Notion in the Notion tab to enable sync.")
+
+                auto_sync = st.toggle(
+                    "Auto-sync on status changes",
+                    value=prefs.get("notion_auto_sync", False) if notion_connected else False,
+                    disabled=not notion_connected,
+                    key="toggle_auto_sync",
+                )
+                if notion_connected and auto_sync != prefs.get("notion_auto_sync", False):
+                    db.save_notion_config(user_id, {"notion_auto_sync": auto_sync}, sb)
+
+                if notion_connected:
+                    st.divider()
+                    col_s, col_i = st.columns(2)
+
+                    if col_s.button("Sync all to Notion", use_container_width=True):
+                        with st.spinner("Syncing to Notion…"):
+                            try:
+                                articles = db.get_all_articles(user_id, sb)
+                                result = notion_utils.sync_articles_to_notion(
+                                    articles, prefs["notion_token"], prefs["notion_database_id"]
+                                )
+                                db.update_notion_last_synced(user_id, sb)
+                                st.success(
+                                    f"Done — {result['created']} added, {result['updated']} updated."
+                                    + (f" ({result['errors']} errors)" if result["errors"] else "")
+                                )
+                            except Exception as e:
+                                st.error(f"Sync failed: {e}")
+
+                    if col_i.button("Import from Notion", use_container_width=True):
+                        with st.spinner("Checking Notion for new URLs…"):
+                            try:
+                                notion_urls = notion_utils.get_notion_urls(
+                                    prefs["notion_token"], prefs["notion_database_id"]
+                                )
+                                all_local = {a["url"] for a in db.get_all_articles(user_id, sb)}
+                                new_urls = [u for u in notion_urls if u not in all_local]
+                                if not new_urls:
+                                    st.info("All Notion articles are already in Later.")
+                                else:
+                                    fetched = fetch_urls_parallel(new_urls)
+                                    scores = score_articles(
+                                        articles=fetched,
+                                        manual_preferences=prefs.get("manual_preferences", ""),
+                                        learned_preferences=prefs.get("learned_preferences"),
+                                        client=ai,
+                                    )
+                                    url_to_score = {s["url"]: s for s in scores}
+                                    rows = [{
+                                        "user_id": user_id,
+                                        "url": f["url"],
+                                        "title": f.get("title") or f.get("domain") or f["url"],
+                                        "domain": f.get("domain"),
+                                        "description": f.get("description"),
+                                        "content_snippet": f.get("content_snippet"),
+                                        "has_full_content": f.get("has_full_content", False),
+                                        "score": url_to_score.get(f["url"], {}).get("score"),
+                                        "score_reason": url_to_score.get(f["url"], {}).get("score_reason"),
+                                        "read_time_minutes": url_to_score.get(f["url"], {}).get("read_time_minutes"),
+                                        "status": "inbox",
+                                    } for f in fetched]
+                                    db.upsert_articles(rows, sb)
+                                    st.success(f"Imported {len(new_urls)} article{'s' if len(new_urls) > 1 else ''}.")
+                                    st.rerun()
+                            except Exception as e:
+                                st.error(f"Import failed: {e}")
+
+                    last_synced = prefs.get("notion_last_synced_at")
+                    if last_synced:
+                        st.caption(f"Last synced: {last_synced[:19].replace('T', ' ')} UTC")
 
     st.divider()
 
@@ -429,6 +589,76 @@ def page_app(user_id: str, user_email: str):
             for article in archived:
                 render_article_card(article, user_id, "archived")
                 st.divider()
+
+    # AI Insights section
+    st.divider()
+    with st.expander("✨ Reading Insights", expanded=False):
+        read_for_insights = db.get_articles(user_id, "read", sb)
+        archived_for_insights = db.get_articles(user_id, "archived", sb)
+        all_actioned = read_for_insights + archived_for_insights
+
+        if not all_actioned:
+            st.info("Read or archive some articles to unlock insights.")
+        else:
+            # Stats
+            from collections import Counter
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Read", len(read_for_insights))
+            c2.metric("Archived", len(archived_for_insights))
+            scored_read = [a for a in read_for_insights if a.get("score")]
+            avg = round(sum(a["score"] for a in scored_read) / len(scored_read), 1) if scored_read else "—"
+            c3.metric("Avg Score (read)", avg)
+            total_rt = sum(a.get("read_time_minutes") or 0 for a in read_for_insights)
+            c4.metric("Reading Time", f"{total_rt} min")
+
+            domains = [a.get("domain") for a in all_actioned if a.get("domain")]
+            if domains:
+                top = Counter(domains).most_common(3)
+                st.caption("Top domains: " + " · ".join(f"**{d}** ({c})" for d, c in top))
+
+            st.divider()
+
+            cached = st.session_state.get("insights_cache")
+            if cached:
+                st.markdown("**Reading patterns**")
+                st.info(cached["narrative"])
+                suggestions = cached.get("suggestions", [])
+                if suggestions:
+                    st.markdown("**What to explore next**")
+                    for s in suggestions:
+                        st.markdown(f"- {s}")
+
+                btn_a, btn_b = st.columns([0.25, 0.75])
+                if btn_a.button("↻ Refresh", key="refresh_insights"):
+                    st.session_state.pop("insights_cache", None)
+                    st.rerun()
+
+                prefs_ins = db.get_or_create_preferences(user_id, sb)
+                if prefs_ins.get("notion_token") and prefs_ins.get("notion_insights_page_id"):
+                    if btn_b.button("Push to Notion", key="push_insights"):
+                        with st.spinner("Updating Notion insights page…"):
+                            try:
+                                notion_utils.update_insights_page(
+                                    prefs_ins["notion_token"],
+                                    prefs_ins["notion_insights_page_id"],
+                                    cached,
+                                )
+                                st.success("Notion insights page updated!")
+                            except Exception as e:
+                                st.error(f"Failed: {e}")
+            else:
+                if st.button("Generate Insights", type="primary", key="gen_insights"):
+                    with st.spinner("Analyzing your reading habits…"):
+                        prefs_ins = db.get_or_create_preferences(user_id, sb)
+                        insights = notion_utils.generate_insights(
+                            read_articles=read_for_insights,
+                            archived_articles=archived_for_insights,
+                            inbox_articles=db.get_articles(user_id, "inbox", sb),
+                            prefs=prefs_ins,
+                            client=ai,
+                        )
+                        st.session_state.insights_cache = insights
+                        st.rerun()
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 

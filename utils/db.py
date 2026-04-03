@@ -83,3 +83,44 @@ def get_recent_actioned_articles(user_id: str, limit: int, sb: Client) -> list[d
 def should_trigger_learning(user_id: str, sb: Client) -> bool:
     prefs = get_or_create_preferences(user_id, sb)
     return prefs.get("action_count", 0) >= LEARNING_TRIGGER_INTERVAL
+
+
+def get_all_articles(user_id: str, sb: Client) -> list[dict]:
+    """Return all articles for a user regardless of status."""
+    res = (
+        sb.table("articles")
+        .select("*")
+        .eq("user_id", user_id)
+        .order("created_at", desc=True)
+        .execute()
+    )
+    return res.data or []
+
+
+def save_notion_config(user_id: str, config: dict, sb: Client):
+    """Upsert Notion config fields into user_preferences."""
+    allowed = {"notion_token", "notion_database_id", "notion_insights_page_id",
+               "notion_parent_page_id", "notion_auto_sync"}
+    sb.table("user_preferences").upsert({
+        "user_id": user_id,
+        **{k: v for k, v in config.items() if k in allowed},
+    }).execute()
+
+
+def clear_notion_config(user_id: str, sb: Client):
+    """Remove all Notion config from user_preferences."""
+    sb.table("user_preferences").update({
+        "notion_token": None,
+        "notion_database_id": None,
+        "notion_insights_page_id": None,
+        "notion_parent_page_id": None,
+        "notion_auto_sync": False,
+        "notion_last_synced_at": None,
+    }).eq("user_id", user_id).execute()
+
+
+def update_notion_last_synced(user_id: str, sb: Client):
+    from datetime import datetime, timezone
+    sb.table("user_preferences").update({
+        "notion_last_synced_at": datetime.now(timezone.utc).isoformat(),
+    }).eq("user_id", user_id).execute()
