@@ -29,16 +29,20 @@ def get_openai() -> OpenAI:
 sb = get_supabase()
 ai = get_openai()
 
-_cookie_bridge = components.declare_component(
+_auth_bridge = components.declare_component(
     "cookie_bridge",
     path=os.path.join(os.path.dirname(__file__), "components/cookie_bridge"),
 )
 
-def _set_cookies(access_token: str, refresh_token: str):
-    _cookie_bridge(action="set", access_token=access_token, refresh_token=refresh_token, max_age=2592000, key="set_cookies")
+def _read_stored_tokens():
+    """Read tokens from browser localStorage. Returns None on first render, dict on second."""
+    return _auth_bridge(action="get", key="auth_read")
 
-def _clear_cookies():
-    _cookie_bridge(action="clear", access_token="", refresh_token="", key="clear_cookies")
+def _write_stored_tokens(access_token: str, refresh_token: str):
+    _auth_bridge(action="set", access_token=access_token, refresh_token=refresh_token, key="auth_write")
+
+def _clear_stored_tokens():
+    _auth_bridge(action="clear", access_token="", refresh_token="", key="auth_clear")
 
 # ── Auth helpers ──────────────────────────────────────────────────────────────
 
@@ -48,13 +52,11 @@ def init_session():
             st.session_state[key] = None
 
 
-def restore_session():
+def restore_session(stored_tokens: dict):
     if st.session_state.get("user_id"):
         return
-    # st.context.cookies reads directly from the HTTP request — no component,
-    # no timing issue, available on every render including the first.
-    access_token = st.context.cookies.get("later_access_token")
-    refresh_token = st.context.cookies.get("later_refresh_token")
+    access_token = stored_tokens.get("access_token", "")
+    refresh_token = stored_tokens.get("refresh_token", "")
     if access_token and refresh_token:
         try:
             result = sb.auth.set_session(access_token, refresh_token)
@@ -64,7 +66,7 @@ def restore_session():
                 st.session_state.user_id = result.user.id
                 st.session_state.user_email = result.user.email
         except Exception:
-            _clear_cookies()
+            _clear_stored_tokens()
 
 
 def is_logged_in() -> bool:
@@ -75,7 +77,7 @@ def logout(expired: bool = False):
     sb.auth.sign_out()
     for key in ["access_token", "refresh_token", "user_id", "user_email"]:
         st.session_state[key] = None
-    _clear_cookies()
+    _clear_stored_tokens()
     if expired:
         st.session_state.session_expired = True
     st.rerun()
@@ -141,11 +143,6 @@ def rescore_articles(articles: list[dict], user_id: str):
 # ── Page: Login ───────────────────────────────────────────────────────────────
 
 def page_login():
-    # TEMP DEBUG — remove after diagnosing cookie issue
-    with st.expander("debug", expanded=False):
-        st.write("st.context.cookies:", dict(st.context.cookies))
-        st.write("session_state keys:", list(st.session_state.keys()))
-
     st.title("📬 Later")
     st.markdown("Your reading list, prioritized.")
     st.divider()
@@ -195,8 +192,7 @@ def page_login():
                         st.session_state.user_id = response.user.id
                         st.session_state.user_email = response.user.email
                         st.session_state.otp_email = None
-                        # Defer cookie write to page_app() so it doesn't race with st.rerun()
-                        st.session_state._write_auth_cookies = True
+                        st.session_state._write_auth_tokens = True
                         st.rerun()
                     except Exception as e:
                         st.error(f"Invalid or expired code. Try again.")
@@ -281,8 +277,8 @@ def render_article_card(article: dict, user_id: str, section: str):
 def page_app(user_id: str, user_email: str):
     # Write auth cookies here (not at login time) so the component isn't
     # interrupted by an immediate st.rerun() before it can write to the browser.
-    if st.session_state.pop("_write_auth_cookies", False):
-        _set_cookies(st.session_state.access_token, st.session_state.refresh_token)
+    if st.session_state.pop("_write_auth_tokens", False):
+        _write_stored_tokens(st.session_state.access_token, st.session_state.refresh_token)
 
     # Header
     col_title, col_settings, col_logout = st.columns([0.8, 0.1, 0.1])
@@ -439,7 +435,14 @@ def page_app(user_id: str, user_email: str):
 def main():
     init_session()
 
-    restore_session()
+    # Read stored tokens from browser localStorage via component.
+    # Returns None on the first render (component not yet loaded) — stop and
+    # wait for the component to report back before deciding what to show.
+    stored_tokens = _read_stored_tokens()
+    if stored_tokens is None:
+        st.stop()
+
+    restore_session(stored_tokens)
 
     if not is_logged_in():
         page_login()
