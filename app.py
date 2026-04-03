@@ -133,6 +133,11 @@ def rescore_articles(articles: list[dict], user_id: str):
 # ── Page: Login ───────────────────────────────────────────────────────────────
 
 def page_login():
+    # TEMP DEBUG — remove after diagnosing cookie issue
+    with st.expander("debug", expanded=False):
+        st.write("st.context.cookies:", dict(st.context.cookies))
+        st.write("session_state keys:", list(st.session_state.keys()))
+
     st.title("📬 Later")
     st.markdown("Your reading list, prioritized.")
     st.divider()
