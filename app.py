@@ -3,7 +3,7 @@ import streamlit as st
 from supabase import create_client, Client
 from openai import OpenAI
 from dotenv import load_dotenv
-import extra_streamlit_components as stx
+from streamlit_cookies_controller import CookieController
 
 from utils.fetcher import fetch_urls_parallel
 from utils.scorer import score_articles, update_learned_preferences
@@ -26,11 +26,9 @@ def get_supabase() -> Client:
 def get_openai() -> OpenAI:
     return OpenAI(api_key=os.environ["OPENAI_API_KEY"])
 
-def get_cookie_manager():
-    return stx.CookieManager(key="later_cookies")
-
 sb = get_supabase()
 ai = get_openai()
+cookies = CookieController()
 
 # ── Auth helpers ──────────────────────────────────────────────────────────────
 
@@ -43,9 +41,8 @@ def init_session():
 def restore_session():
     if st.session_state.get("user_id"):
         return
-    cookie_manager = get_cookie_manager()
-    access_token = cookie_manager.get("later_access_token")
-    refresh_token = cookie_manager.get("later_refresh_token")
+    access_token = cookies.get("later_access_token")
+    refresh_token = cookies.get("later_refresh_token")
     if access_token and refresh_token:
         try:
             result = sb.auth.set_session(access_token, refresh_token)
@@ -55,8 +52,8 @@ def restore_session():
                 st.session_state.user_id = result.user.id
                 st.session_state.user_email = result.user.email
         except Exception:
-            cookie_manager.delete("later_access_token")
-            cookie_manager.delete("later_refresh_token")
+            cookies.remove("later_access_token")
+            cookies.remove("later_refresh_token")
 
 
 def is_logged_in() -> bool:
@@ -67,9 +64,8 @@ def logout(expired: bool = False):
     sb.auth.sign_out()
     for key in ["access_token", "refresh_token", "user_id", "user_email"]:
         st.session_state[key] = None
-    cookie_manager = get_cookie_manager()
-    cookie_manager.delete("later_access_token")
-    cookie_manager.delete("later_refresh_token")
+    cookies.remove("later_access_token")
+    cookies.remove("later_refresh_token")
     if expired:
         st.session_state.session_expired = True
     st.rerun()
@@ -184,9 +180,8 @@ def page_login():
                         st.session_state.user_id = response.user.id
                         st.session_state.user_email = response.user.email
                         st.session_state.otp_email = None
-                        cookie_manager = get_cookie_manager()
-                        cookie_manager.set("later_access_token", response.session.access_token, max_age=60 * 60 * 24 * 30)
-                        cookie_manager.set("later_refresh_token", response.session.refresh_token, max_age=60 * 60 * 24 * 30)
+                        cookies.set("later_access_token", response.session.access_token, max_age=60 * 60 * 24 * 30)
+                        cookies.set("later_refresh_token", response.session.refresh_token, max_age=60 * 60 * 24 * 30)
                         st.rerun()
                     except Exception as e:
                         st.error(f"Invalid or expired code. Try again.")
