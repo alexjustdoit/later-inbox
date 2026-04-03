@@ -369,11 +369,14 @@ def page_app(user_id: str, user_email: str):
             render_article_card(article, user_id, "inbox")
             st.divider()
 
-        # Multi-select re-score (computed from checkbox widget state after render)
+        # Re-score controls (computed from checkbox widget state after render)
         selected_articles = [a for a in inbox if st.session_state.get(f"sel_{a['id']}", False)]
+        btn_cols = st.columns([0.22, 0.22, 0.56])
         if selected_articles:
-            if st.button(f"↻ Re-score selected ({len(selected_articles)})", type="secondary"):
+            if btn_cols[0].button(f"↻ Re-score selected ({len(selected_articles)})", type="secondary"):
                 rescore_articles(selected_articles, user_id)
+        if btn_cols[1].button("↻ Re-score all", type="secondary"):
+            rescore_articles(inbox, user_id)
 
     # Read section
     read_articles = db.get_articles(user_id, "read", sb)
