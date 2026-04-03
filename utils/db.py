@@ -45,11 +45,11 @@ def get_articles(user_id: str, status: str, sb: Client) -> list[dict]:
         .select("*")
         .eq("user_id", user_id)
         .eq("status", status)
-        .order("score", desc=True, nulls_last=True)
         .order("created_at", desc=True)
         .execute()
     )
-    return res.data or []
+    data = res.data or []
+    return sorted(data, key=lambda a: (a.get("score") is None, -(a.get("score") or 0)))
 
 
 def update_article_status(article_id: str, status: str, sb: Client):
