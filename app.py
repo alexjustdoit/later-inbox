@@ -182,8 +182,8 @@ def page_login():
                         st.session_state.user_id = response.user.id
                         st.session_state.user_email = response.user.email
                         st.session_state.otp_email = None
-                        cookies.set("later_access_token", response.session.access_token, max_age=60 * 60 * 24 * 30)
-                        cookies.set("later_refresh_token", response.session.refresh_token, max_age=60 * 60 * 24 * 30)
+                        # Defer cookie write to page_app() so it doesn't race with st.rerun()
+                        st.session_state._write_auth_cookies = True
                         st.rerun()
                     except Exception as e:
                         st.error(f"Invalid or expired code. Try again.")
@@ -266,6 +266,12 @@ def render_article_card(article: dict, user_id: str, section: str):
 
 
 def page_app(user_id: str, user_email: str):
+    # Write auth cookies here (not at login time) so the component isn't
+    # interrupted by an immediate st.rerun() before it can write to the browser.
+    if st.session_state.pop("_write_auth_cookies", False):
+        cookies.set("later_access_token", st.session_state.access_token, max_age=60 * 60 * 24 * 30)
+        cookies.set("later_refresh_token", st.session_state.refresh_token, max_age=60 * 60 * 24 * 30)
+
     # Header
     col_title, col_settings, col_logout = st.columns([0.8, 0.1, 0.1])
     with col_title:
