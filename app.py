@@ -213,6 +213,28 @@ def page_login():
                 st.session_state.otp_email = None
                 st.rerun()
 
+        # Demo login — only shown when DEMO_EMAIL/DEMO_PASSWORD are configured
+        _demo_email = os.environ.get("DEMO_EMAIL", "")
+        _demo_password = os.environ.get("DEMO_PASSWORD", "")
+        if _demo_email and _demo_password and not st.session_state.get("otp_email"):
+            st.divider()
+            st.caption("Just exploring?")
+            if st.button("Continue as Demo", use_container_width=True):
+                try:
+                    response = sb.auth.sign_in_with_password({
+                        "email": _demo_email,
+                        "password": _demo_password,
+                    })
+                    st.session_state.access_token = response.session.access_token
+                    st.session_state.refresh_token = response.session.refresh_token
+                    st.session_state.user_id = response.user.id
+                    st.session_state.user_email = response.user.email
+                    st.session_state.otp_email = None
+                    st.session_state._write_auth_tokens = True
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Demo login unavailable: {e}")
+
 # ── Page: Onboarding ──────────────────────────────────────────────────────────
 
 def page_onboarding(user_id: str):
