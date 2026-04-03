@@ -144,12 +144,12 @@ def page_login():
         else:
             # Step 2: enter OTP code
             email = st.session_state.otp_email
-            st.info(f"A 6-digit code was sent to **{email}**")
-            code = st.text_input("Enter code", max_chars=6, placeholder="123456")
+            st.info(f"An 8-digit code was sent to **{email}**")
+            code = st.text_input("Enter code", max_chars=8, placeholder="12345678")
             col_a, col_b = st.columns(2)
             if col_a.button("Verify", use_container_width=True, type="primary"):
-                if not code or len(code) != 6:
-                    st.error("Enter the 6-digit code from your email.")
+                if not code or len(code) != 8:
+                    st.error("Enter the 8-digit code from your email.")
                 else:
                     try:
                         response = sb.auth.verify_otp({
