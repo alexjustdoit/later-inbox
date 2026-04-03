@@ -41,8 +41,10 @@ def init_session():
 def restore_session():
     if st.session_state.get("user_id"):
         return
-    access_token = cookies.get("later_access_token")
-    refresh_token = cookies.get("later_refresh_token")
+    # st.context.cookies reads directly from the HTTP request — no component,
+    # no timing issue, available on every render including the first.
+    access_token = st.context.cookies.get("later_access_token")
+    refresh_token = st.context.cookies.get("later_refresh_token")
     if access_token and refresh_token:
         try:
             result = sb.auth.set_session(access_token, refresh_token)
@@ -418,12 +420,6 @@ def page_app(user_id: str, user_email: str):
 
 def main():
     init_session()
-
-    # Cookie controller needs one render cycle to load from the browser.
-    # If getAll() returns None the component hasn't communicated yet — stop
-    # and let Streamlit re-run automatically once it does.
-    if cookies.getAll() is None:
-        st.stop()
 
     restore_session()
 
