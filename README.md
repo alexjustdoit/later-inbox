@@ -61,5 +61,27 @@ streamlit run app.py
 
 ## Backlog
 
+**Import / Input**
 - Pocket / Instapaper export import
+- Browser bookmarks import — selective by bookmark or folder (allows a dedicated "Later" folder); duplicate detection to avoid re-importing
+- Share sheet / bookmarklet — one-click "send to Later" from any browser
+
+**Inbox**
+- Sort / filter — by score, date added, domain, tag, read time
+- Search — across titles and descriptions
+- Bulk mark read / bulk archive
+- Duplicate detection
+- Staleness flagging — surface articles unread for 30+ days
+- Ability to permanently delete from Archive
+
+**Scoring & Intelligence**
+- Score explanation detail — expandable "why this score?" beyond the one-liner
+- Tag / category auto-labeling by AI, with manual editing
+- Re-score triggered automatically when preferences change significantly
+
+**Stats & Notifications**
+- Reading history stats — articles read, avg score of reads vs archives, top domains
+- Weekly digest email — top N unread articles from your inbox
+
+**Integrations**
 - Notion sync
