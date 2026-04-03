@@ -10,8 +10,7 @@
   }
 
   window.addEventListener("message", function (event) {
-    if (!event.data.isStreamlitMessage) return;
-    if (event.data.type !== "streamlit:render") return;
+    if (!event.data || event.data.type !== "streamlit:render") return;
 
     var args = event.data.args || {};
 
